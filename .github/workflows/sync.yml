@@ -21,3 +21,14 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python sync_content.py
+      # TikTok:competitors 表里 tracker 填 TT 的账号。没有 TT 账号就自动跳过。
+      # if: always() —— IG 那步失败也照样抓 TikTok
+      - name: Sync TikTok competitors
+        if: always()
+        env:
+          TRACKER: TT
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESULTS_LIMIT: ${{ vars.TT_RESULTS_LIMIT || vars.RESULTS_LIMIT }}
+        run: python sync_content.py

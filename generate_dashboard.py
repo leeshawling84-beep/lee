@@ -5,7 +5,7 @@ Viral Posts Dashboard Generator
 Pulls the posts table from Supabase and bakes a static dashboard into
 docs/index.html for GitHub Pages.
 
-- Videos play inline via Instagram's official /embed/ iframe (never expires).
+- Videos play inline via Instagram's /embed/ or TikTok's /player/v1/ iframe (never expires).
 - Status writes go straight to Supabase from the browser using the anon key
   (baked into the page). RLS + a column-level grant limit anon to updating
   the status column only, so the key is safe to publish — no login needed.
@@ -27,7 +27,7 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")  # public key, baked
 # Falls back to sensible defaults so the page still builds before they're set.
 BRAND = os.environ.get("BRAND") or "爆款雷达"
 SYNC_DAY = os.environ.get("SYNC_DAY") or "每周"
-TRACKER_LABEL = {"IG": BRAND + " 竞对"}
+TRACKER_LABEL = {"IG": BRAND + " 竞对", "TT": BRAND + " TikTok 竞对"}
 STATUSES = ["未处理", "拍摄中", "已处理", "跳过"]
 
 # comment-bait CTA patterns — require an explicit gated keyword:
@@ -67,7 +67,12 @@ def _handle(name):
     """Normalise a competitor handle the way sync_content.py does, so the two
     scripts always agree on what '@Nike' and 'instagram.com/nike/' mean."""
     n = (name or "").strip()
-    if "instagram.com" in n:
+    if "tiktok.com" in n:
+        parts = [p for p in urllib.parse.urlparse(n).path.split("/") if p]
+        if not parts or not parts[0].startswith("@"):
+            return ""
+        n = parts[0]
+    elif "instagram.com" in n:
         parts = [p for p in urllib.parse.urlparse(n).path.split("/") if p]
         if not parts or parts[0] in ("p", "reel", "reels", "stories", "tv"):
             return ""
@@ -109,6 +114,7 @@ def normalize(r):
     er = r.get("engagement_rate") or 0
     return {
         "id": post_id,
+        "plat": "TT" if r.get("tracker") == "TT" else "IG",
         "tracker": TRACKER_LABEL.get(r.get("tracker"), r.get("tracker") or "AI Competitors"),
         "competitor": r.get("competitor") or "",
         "caption": caption,
@@ -123,7 +129,9 @@ def normalize(r):
         "er": round(float(er) * 100, 2),
         "followers": r.get("followers") or 0,
         "date": r.get("post_date") or "",
-        "url": r.get("post_url") or f"https://www.instagram.com/p/{post_id}/",
+        "url": r.get("post_url") or (
+            f"https://www.tiktok.com/@{r.get('competitor') or ''}/video/{post_id}"
+            if r.get("tracker") == "TT" else f"https://www.instagram.com/p/{post_id}/"),
         "video": bool(r.get("is_video")) or (r.get("post_type") in ("Video", "Reel")) or bool(r.get("video_url")),
         "ratio": 0,
         "score": float(r.get("viral_score") or 0),
@@ -250,6 +258,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
   .embed { position: relative; width: 100%; aspect-ratio: 4/5; background: #080b10; }
+  .embed.tt { aspect-ratio: 9/16; }
   .embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
   .embed .ph { position: absolute; inset: 0; display: grid; place-items: center;
     background: linear-gradient(110deg, #0b0e15 8%, #121826 18%, #0b0e15 33%);
@@ -390,7 +399,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="empty" id="empty" style="display:none"><svg class="ic"><use href="#i-search"/></svg>没有符合条件的帖子</div>
   <div class="more" id="moreWrap" style="display:none"><button id="moreBtn">载入更多</button></div>
 </main>
-<footer>数据来源 Supabase · __SYNC_DAY__自动更新 · 状态更改即时同步全团队 · 视频由 Instagram 官方 embed 播放</footer>
+<footer>数据来源 Supabase · __SYNC_DAY__自动更新 · 状态更改即时同步全团队 · 视频由 Instagram / TikTok 官方 embed 播放</footer>
 <div id="toast"></div>
 <script id="data" type="application/json">__DATA__</script>
 <script>
@@ -427,6 +436,10 @@ function toast(msg, ok) {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
   t.style.borderColor = ok ? 'var(--green)' : 'var(--red)';
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+function profUrl(d) {
+  return d.plat === 'TT' ? 'https://www.tiktok.com/@' + d.competitor : 'https://www.instagram.com/' + d.competitor + '/';
 }
 
 // filters
@@ -485,7 +498,9 @@ const io = new IntersectionObserver(entries => {
       const el = e.target, pid = el.dataset.pid;
       if (!el.querySelector('iframe')) {
         const f = document.createElement('iframe');
-        f.src = 'https://www.instagram.com/p/' + pid + '/embed/';
+        f.src = el.dataset.plat === 'TT'
+          ? 'https://www.tiktok.com/player/v1/' + pid + '?description=0&music_info=0&rel=0'
+          : 'https://www.instagram.com/p/' + pid + '/embed/';
         f.loading = 'lazy'; f.allow = 'autoplay; encrypted-media';
         el.appendChild(f);
       }
@@ -534,11 +549,11 @@ function card(d, idx) {
   const hook = lines[0] || '';
   const tr = (d.transcript && d.transcript !== '(转录失败)' && d.transcript !== '(无口播内容)') ? d.transcript : '';
   el.innerHTML = `
-    <div class="embed" data-pid="${d.id}"><div class="ph"><svg class="ic"><use href="#i-${typeIcon}"/></svg></div></div>
+    <div class="embed${d.plat === 'TT' ? ' tt' : ''}" data-pid="${d.id}" data-plat="${d.plat}"><div class="ph"><svg class="ic"><use href="#i-${typeIcon}"/></svg></div></div>
     <div class="meta">
       <div class="row1">
         <span class="handle" title="拖到上方 tab 即可归类">${I('grip')}</span>
-        <a class="who" href="https://www.instagram.com/${d.competitor}/" target="_blank">@${d.competitor}</a>
+        <a class="who" href="${profUrl(d)}" target="_blank">@${d.competitor}</a>
         <span class="badge">${d.type || '-'}</span>
         ${days !== null && days <= 7 ? '<span class="badge bnew">' + I('star') + '新帖</span>' : ''}
         ${horse ? '<span class="badge bhorse">' + I('zap') + '黑马</span>' : ''}
@@ -561,7 +576,7 @@ function card(d, idx) {
         ${tr ? '<button class="abtn mic" title="复制视频口播逐字稿">' + I('mic') + '口播</button>' : ''}
         ${d.my ? '<button class="abtn minec" title="复制我的改写口播稿(可直接拍)">' + I('mic') + '我的稿</button>' : ''}
         <button class="abtn brief" title="复制拍摄 Brief(数据+Hook+AI拆解+我的稿+口播稿+文案)">${I('clip')}Brief</button>
-        <a class="abtn" href="${d.url}" target="_blank" title="打开 Instagram 原帖">${I('ext')}</a></div>
+        <a class="abtn" href="${d.url}" target="_blank" title="打开原帖">${I('ext')}</a></div>
     </div>`;
   const capEl = el.querySelector('.cap');
   const restTxt = lines.slice(1).join('\\n');
@@ -898,8 +913,8 @@ TEAM_TEMPLATE = """<!DOCTYPE html>
       <h3><svg class="ic"><use href="#i-user"/></svg>SOP-05 · 竞对名单管理(发现好账号就加进来)</h3>
       <ol>
         <li>打开 Supabase「<b>competitors</b>」表,加一行</li>
-        <li><b>Username</b>:贴账号名或 IG <b>主页</b>链接都行(带 ?igsh= 参数没关系;不要贴帖子链接)</li>
-        <li><b>Tracker</b>:选 IG Competitors 或 AI Competitors</li>
+        <li><b>Username</b>:贴账号名或 IG / TikTok <b>主页</b>链接都行(带 ?igsh= 参数没关系;不要贴帖子链接)</li>
+        <li><b>Tracker</b>:Instagram 填 <b>IG</b>,TikTok 填 <b>TT</b></li>
         <li><b>Active</b>:打勾✅ — <b>没勾不会抓</b></li>
         <li>每周一自动生效;停止追踪 = 取消勾,不用删行</li>
       </ol>
@@ -1054,7 +1069,7 @@ function renderWork() {
   if (!shoot.length) sl.innerHTML = '<div class="none">队列是空的 — Marketer 去爆款雷达挑几条拖进「拍摄中」</div>';
   shoot.forEach(d => {
     const r = document.createElement('div'); r.className = 'row';
-    r.innerHTML = '<a class="who2" href="https://www.instagram.com/' + d.competitor + '/" target="_blank">@' + esc(d.competitor) + '</a>'
+    r.innerHTML = '<a class="who2" href="' + (d.plat === 'TT' ? 'https://www.tiktok.com/@' + d.competitor : 'https://www.instagram.com/' + d.competitor + '/') + '" target="_blank">@' + esc(d.competitor) + '</a>'
       + ((d.x || 0) >= 2 ? '<span class="xb">×' + d.x + '</span>' : '')
       + '<span class="hookline">' + esc(firstLine(d.caption)) + '</span>'
       + '<a class="pill" href="' + d.url + '" target="_blank">' + I('ext') + '原帖</a>'
@@ -1072,7 +1087,7 @@ function renderWork() {
   picks.forEach(d => {
     const r = document.createElement('div'); r.className = 'row';
     r.innerHTML = '<span class="xb">×' + d.x + '</span>'
-      + '<a class="who2" href="https://www.instagram.com/' + d.competitor + '/" target="_blank">@' + esc(d.competitor) + '</a>'
+      + '<a class="who2" href="' + (d.plat === 'TT' ? 'https://www.tiktok.com/@' + d.competitor : 'https://www.instagram.com/' + d.competitor + '/') + '" target="_blank">@' + esc(d.competitor) + '</a>'
       + '<span class="hookline">' + esc(firstLine(d.caption))
       + '<small>🔥' + d.score + ' · ER ' + d.er + '% · 💬' + fmt(d.comments) + '</small></span>'
       + '<a class="pill" href="' + d.url + '" target="_blank">' + I('ext') + '原帖</a>'

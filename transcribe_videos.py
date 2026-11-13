@@ -10,7 +10,10 @@ retries next run instead of being buried under a failure mark. Only videos
 the CDN reports gone (4xx) are marked permanently; transient errors keep
 their retry window (IG URLs live ~days, and each weekly sync refreshes them).
 
-Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+TikTok videos are copies Apify saved in its key-value store; those URLs need
+the Apify token, so APIFY_TOKEN is sent to api.apify.com (and nowhere else).
+
+Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, APIFY_TOKEN (for TikTok)
      WHISPER_MODEL (default small), MAX_AGE_DAYS (14), VIDEO_LIMIT (40),
      TIME_BUDGET_MIN (300)
 """
@@ -64,7 +67,11 @@ def save_transcript(post_id, text):
 
 
 def download(url, path):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    headers = {"User-Agent": "Mozilla/5.0"}
+    token = (os.environ.get("APIFY_TOKEN") or "").strip()
+    if token and urllib.parse.urlparse(url).hostname == "api.apify.com":
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=120) as resp, open(path, "wb") as f:
         while True:
             chunk = resp.read(1 << 16)

@@ -117,3 +117,9 @@ insert into competitors (username, tracker, active) values
   ('换成竞对4', 'IG', true),
   ('换成竞对5', 'IG', true)
 on conflict do nothing;
+
+-- 想追踪 TikTok?tracker 填 'TT'(账号名 = tiktok.com/@ 后面那段,不要 @)。
+-- 不用 TikTok 的话,这段留着注释就好。
+-- insert into competitors (username, tracker, active) values
+--   ('tiktok竞对1', 'TT', true)
+-- on conflict do nothing;

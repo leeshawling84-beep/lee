@@ -1,6 +1,6 @@
 # 📡 爆款雷达 · 网页版(不用碰终端)
 
-每周自动抓竞对 IG 爆款 → 转录口播 → AI 拆解 → **改写成你自己语气的口播稿** → 生成可拖拽管理的 dashboard。
+每周自动抓竞对 IG + TikTok 爆款 → 转录口播 → AI 拆解 → **改写成你自己语气的口播稿** → 生成可拖拽管理的 dashboard。
 
 **这个版本全程在网页上点鼠标就能装好,不用打任何指令。** 照下面 6 步走,约 20 分钟。
 
@@ -11,7 +11,7 @@
 - **GitHub**(github.com)— 免费,存代码 + 每周自动运行
 - **Supabase**(supabase.com)— 免费,数据库。注册时选 *Continue with GitHub* 最快
 - **Google AI Studio**(aistudio.google.com)— 免费,用 Google 账号登录就行。给 AI 拆解 + 我的稿用的 Gemini 钥匙
-- **Apify**(apify.com)— 唯一收费,约 $5/月,负责抓 IG
+- **Apify**(apify.com)— 唯一收费,约 $5/月,负责抓 IG 和 TikTok
 
 ---
 
@@ -127,6 +127,20 @@ Supabase 左下角 **Settings → API Keys**,复制三样(先放记事本):
 - ➕ 加/停竞对:Supabase → Table Editor → `competitors` 表加一行(active 打勾)或取消勾
 - 🤖 系统每周自动推荐相关账号进 competitors(active 未勾),觉得好就勾
 - 💰 费用:Apify 免费方案每月自带 $5 额度(不用绑卡),7 个竞对实测约 $1.1/月,一般用不完
+
+## 🎵 追踪 TikTok 竞对
+
+同一套系统也能抓 TikTok,不用多建任何东西 —— 用的是同一把 `APIFY_TOKEN`。
+
+1. Supabase → SQL Editor,跑 `加竞对.sql` 里 TikTok 那一段,或到 Table Editor → `competitors` 加一行:
+   - `username`:TikTok 账号名,就是 `tiktok.com/@xxxx` 里的 `xxxx`(不要 @;贴主页链接也行)
+   - `tracker`:填 **`TT`**(大写)
+   - `active`:打勾
+2. Actions → **Sync Content** → Run workflow。同一个 workflow 会先抓 IG、再抓 TikTok,之后照样自动转录 → AI 拆解 → 我的稿 → 网页
+3. 网页上 Tracker 下拉会多一个「TikTok 竞对」,卡片里直接播放 TikTok 视频
+
+> 💰 TikTok 用的是 Apify 的 `clockworks/tiktok-scraper`,为了能转录口播会顺便把视频存一份,比只抓数据贵一点。想省钱就加 Variable `TT_RESULTS_LIMIT`(例:`20`),只限 TikTok 每个账号抓几条,不影响 IG。
+> 💡 TikTok 的赞通常比 IG 多很多,互动率会看起来很高 —— 每个账号还是有 `MAX_PER_COMP` 封顶,不会刷屏。
 
 ## 🎬 我的稿:把爆款改写成你的口播稿(不用改代码)
 

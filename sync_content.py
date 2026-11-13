@@ -25,7 +25,10 @@ CDN links let previously skipped videos transcribe); status / transcript /
 ai_breakdown are never in the payload, so worked rows are never clobbered.
 engagement_rate and viral_score are generated columns — never written.
 
-Env (required): TRACKER ("IG" or "AI"), APIFY_TOKEN, SUPABASE_URL,
+TRACKER=TT scrapes TikTok (clockworks~tiktok-scraper) instead of Instagram;
+follower counts come with each video, so there is no separate profile step.
+
+Env (required): TRACKER ("IG", "TT" or "AI"), APIFY_TOKEN, SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY
 Env (tuning, all optional -- set as GitHub Actions *Variables*):
      MIN_ER (0.02)  MIN_COMMENTS (15)  MIN_ENGAGE (20)  OUTLIER_X (1.5)
@@ -121,7 +124,13 @@ def fetch_competitors():
     names = []
     for r in rows:
         n = (r.get("username") or "").strip()
-        if "instagram.com" in n:
+        if "tiktok.com" in n:
+            parts = [p for p in urllib.parse.urlparse(n).path.split("/") if p]
+            if not parts or not parts[0].startswith("@"):
+                print(f"  WARNING: skipping non-profile link: {n[:60]}")
+                continue
+            n = parts[0]  # tiktok.com/@user/... -> @user (the @ is stripped below)
+        elif "instagram.com" in n:
             parts = [p for p in urllib.parse.urlparse(n).path.split("/") if p]
             if not parts or parts[0] in ("p", "reel", "reels", "stories", "tv"):
                 print(f"  WARNING: skipping non-profile link: {n[:60]}")
@@ -247,7 +256,7 @@ def to_rows(posts, followers_map, today):
                 "comments": comments,
                 "followers": fol,
                 "post_date": parse_date(p.get("timestamp")),
-                "post_url": f"https://www.instagram.com/p/{p['shortCode']}/",
+                "post_url": p.get("_url") or f"https://www.instagram.com/p/{p['shortCode']}/",
                 "thumbnail_url": p.get("displayUrl") or p.get("imageUrl") or None,
                 "video_url": p.get("videoUrl") or None,
                 "hashtags": ", ".join(tags) if isinstance(tags, list) else str(tags),
@@ -339,6 +348,64 @@ def cleanup():
 # ---------------------------------------------------------------------------
 
 
+def tiktok_to_posts(items):
+    """Map clockworks~tiktok-scraper items onto the IG field names to_rows()
+    reads, and pull each author's follower count out of authorMeta."""
+    posts, followers = [], {}
+    for it in items:
+        if it.get("error"):
+            posts.append({"error": it.get("error")})
+            continue
+        am = it.get("authorMeta") or {}
+        u = (am.get("name") or "").lower().strip()
+        fans = am.get("fans") or 0
+        if u and fans:
+            followers[u] = int(fans)
+        media = [m for m in (it.get("mediaUrls") or []) if m]
+        vm = it.get("videoMeta") or {}
+        slideshow = bool(it.get("isSlideshow"))
+        posts.append({
+            "shortCode": str(it.get("id") or ""),
+            "ownerUsername": u,
+            "likesCount": it.get("diggCount") or 0,
+            "commentsCount": it.get("commentCount") or 0,
+            "caption": it.get("text") or "",
+            "timestamp": it.get("createTimeISO") or it.get("createTime"),
+            "type": "Carousel" if slideshow else "Video",
+            "isVideo": not slideshow,
+            # mediaUrls = copy Apify saved in its key-value store; TikTok's own
+            # downloadAddr needs TikTok cookies, so it is only a fallback
+            "videoUrl": None if slideshow else (media[0] if media else vm.get("downloadAddr")),
+            "displayUrl": vm.get("coverUrl") or vm.get("originalCoverUrl"),
+            "hashtags": [h.get("name") for h in (it.get("hashtags") or [])
+                         if isinstance(h, dict) and h.get("name")],
+            "_url": it.get("webVideoUrl")
+                    or f"https://www.tiktok.com/@{u}/video/{it.get('id')}",
+        })
+    return posts, followers
+
+
+def scrape_tiktok(token, names):
+    from datetime import timedelta
+    since = (datetime.now(timezone.utc) - timedelta(days=DAYS_BACK)).date().isoformat()
+    items = run_actor(token, "clockworks~tiktok-scraper", {
+        "profiles": names,
+        "profileScrapeSections": ["videos"],
+        "profileSorting": "latest",
+        "resultsPerPage": RESULTS_LIMIT,
+        "oldestPostDateUnified": since,
+        "excludePinnedPosts": False,
+        "shouldDownloadVideos": True,     # needed so Whisper can fetch the mp4
+        "shouldDownloadCovers": False,
+        "shouldDownloadSubtitles": False,
+        "shouldDownloadSlideshowImages": False,
+    }, "TikTok videos")
+    posts, followers = tiktok_to_posts(items)
+    print(f"  scraped {len(posts)} videos (since {since}, <= {RESULTS_LIMIT}/account) | "
+          f"followers for {len(followers)}/{len(names)}")
+    return posts, followers
+
+
 def main():
     token = (os.environ.get("APIFY_TOKEN") or "").strip()
     if not token or not SUPABASE_URL or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
@@ -354,6 +421,12 @@ def main():
     print(f"  filter: ER>={MIN_ER:.1%} OR comments>={MIN_COMMENTS} OR "
           f"engagements>={OUTLIER_X}x own median | floor {MIN_ENGAGE} | "
           f"keep {TOP_N_PER_COMP}-{MAX_PER_COMP} per account")
+
+    if TRACKER == "TT":
+        posts, followers = scrape_tiktok(token, names)
+        today = datetime.now(timezone.utc).date().isoformat()
+        write_rows(to_rows(posts, followers, today), today)
+        return
 
     profiles = run_actor(token, "apify~instagram-profile-scraper",
                          {"usernames": names}, "Step 1 profiles")
@@ -377,7 +450,10 @@ def main():
           f"<= {RESULTS_LIMIT}/account)")
 
     today = datetime.now(timezone.utc).date().isoformat()
-    rows = to_rows(posts, followers, today)
+    write_rows(to_rows(posts, followers, today), today)
+
+
+def write_rows(rows, today):
     if rows:
         for i in range(0, len(rows), 100):
             sb("posts?on_conflict=post_id", method="POST", data=rows[i:i+100],
@@ -388,7 +464,7 @@ def main():
         # is gone. This sync just refreshed those URLs — clear the fail marks so
         # transcription gets another shot with the fresh links.
         mark = urllib.parse.quote("(转录失败)")
-        sb(f"posts?transcript=eq.{mark}&last_synced=eq.{today}",
+        sb(f"posts?tracker=eq.{TRACKER}&transcript=eq.{mark}&last_synced=eq.{today}",
            method="PATCH", data={"transcript": None}, prefer="return=minimal")
         print("[Upsert] reopened previously-failed transcripts with fresh URLs")
     else:
